@@ -1,0 +1,10 @@
+{
+  "name": "kudu-vfs",
+  "version": "0.1.0",
+  "main": "server.js",
+  "dependencies": {
+    "vfs-local": "~0.3.4",
+    "vfs-http-adapter": "~0.2.3",
+    "stack": "~0.1.0"
+  }
+}
