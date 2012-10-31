@@ -61,7 +61,7 @@ namespace Kudu.Services.Deployment
         /// </summary>
         /// <param name="id">id of the deployment to redeploy</param>
         [HttpPut]
-        public void Deploy(string id)
+        public void Deploy(string id, JObject input)
         {
             JObject result = GetJsonContent();
 
@@ -80,9 +80,26 @@ namespace Kudu.Services.Deployment
                         }
 
                         string username = null;
-                        AuthUtility.TryExtractBasicAuthUser(Request, out username);
+                        if (input != null)
+                        {
+                            username = input.Value<string>("deployer");
+                        }
 
-                        _deploymentManager.Deploy(id, username, clean);
+                        if (username == null)
+                        {
+                            AuthUtility.TryExtractBasicAuthUser(Request, out username);
+                        }
+
+                        if (id == null)
+                        {
+                            // Null ID means deploy the latest commit on the current branch
+
+                            _deploymentManager.Deploy(username);
+                        }
+                        else
+                        {
+                            _deploymentManager.Deploy(id, username, clean);
+                        }
                     }
                     catch (FileNotFoundException ex)
                     {
