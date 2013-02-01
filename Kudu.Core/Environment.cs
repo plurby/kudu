@@ -15,7 +15,7 @@ namespace Kudu.Core
         private readonly string _tempPath;
         private readonly string _scriptPath;
         private readonly string _nodeModulesPath;
-        private readonly string _repositoryPath;
+        private readonly string _defaultRepositoryPath;
         private readonly string _logFilesPath;
         private readonly string _tracePath;
         private readonly string _deploymentTracePath;
@@ -46,7 +46,7 @@ namespace Kudu.Core
             RootPath = rootPath;
             SiteRootPath = siteRootPath;
             _tempPath = tempPath;
-            _repositoryPath = repositoryPath;
+            _defaultRepositoryPath = repositoryPath;
             _webRootPath = webRootPath;
             _deployCachePath = deployCachePath;
             _diagnosticsPath = diagnosticsPath;
@@ -62,8 +62,17 @@ namespace Kudu.Core
         {
             get
             {
-                FileSystemHelpers.EnsureDirectory(_fileSystem, _repositoryPath);
-                return _repositoryPath;
+                var repositoryPath = IsInPlaceDeployment ? WebRootPath : _defaultRepositoryPath;
+                FileSystemHelpers.EnsureDirectory(_fileSystem, repositoryPath);
+                return repositoryPath;
+            }
+        }
+
+        public bool IsInPlaceDeployment
+        {
+            get
+            {
+                return true;
             }
         }
 

@@ -30,7 +30,7 @@ namespace Kudu.Core.Test
             Assert.Equal("repositoryPath", ex.ParamName);
         }
 
-        [Fact]
+        //[Fact]
         public void RepositoryPathCreatesDirectoryIfItDoesNotExist()
         {
             // Arrange

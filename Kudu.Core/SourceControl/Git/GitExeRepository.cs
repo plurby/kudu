@@ -54,8 +54,9 @@ namespace Kudu.Core.SourceControl.Git
         {
             get
             {
-                return Directory.Exists(_gitExe.WorkingDirectory) &&
-                       Directory.EnumerateFileSystemEntries(_gitExe.WorkingDirectory).Any();
+                var gitDir = Path.Combine(_gitExe.WorkingDirectory, ".git");
+                return Directory.Exists(gitDir) &&
+                       Directory.EnumerateFileSystemEntries(gitDir).Any();
             }
         }
 

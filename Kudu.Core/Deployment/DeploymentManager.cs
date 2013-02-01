@@ -523,7 +523,10 @@ namespace Kudu.Core.Deployment
                 {
                     // In this case it is the first deployment (no active deployment)
                     // So we remove all files from wwwroot
-                    FileSystemHelpers.DeleteDirectoryContentsSafe(context.OutputPath);
+                    if (!_environment.IsInPlaceDeployment)
+                    {
+                        FileSystemHelpers.DeleteDirectoryContentsSafe(context.OutputPath);
+                    }
                 }
 
                 builder.Build(context)

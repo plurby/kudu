@@ -16,5 +16,6 @@ namespace Kudu.Core
         string LogFilesPath { get; }            // e.g. /logfiles
         string TracePath { get; }               // e.g. /logfiles/git/trace
         string DeploymentTracePath { get; }     // e.g. /logfiles/git/deployment
+        bool IsInPlaceDeployment { get; }
     }
 }
