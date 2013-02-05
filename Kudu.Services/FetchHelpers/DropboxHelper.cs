@@ -58,11 +58,11 @@ namespace Kudu.Services
             if (!IsEmptyRepo())
             {
                 // git checkout --force <branch>
-                _repository.Update(branch);
+                //_repository.Update(branch);
             }
 
             ChangeSet changeSet;
-            string prefix = "Partially synced";
+            //string prefix = "Partially synced";
             try
             {
                 using (_tracer.Step("Synch with Dropbox"))
@@ -71,12 +71,12 @@ namespace Kudu.Services
                     ApplyChanges(info);
                 }
 
-                prefix = "Synced";
+                //prefix = "Synced";
             }
             finally
             {
                 // Commit anyway even partial change
-                changeSet = _repository.Commit(prefix + " with Dropbox", String.Format("{0} <{1}>", info.UserName, info.Email));
+                changeSet = null; // _repository.Commit(prefix + " with Dropbox", String.Format("{0} <{1}>", info.UserName, info.Email));
             }
 
             // Save new dropboc cursor
@@ -231,7 +231,8 @@ namespace Kudu.Services
         private string GetRepositoryPath(string parent, string path)
         {
             string relativePath = path.Substring(parent.Length).Replace('/', '\\');
-            return Path.Combine(_environment.RepositoryPath, relativePath);
+            //return Path.Combine(_environment.RepositoryPath, relativePath);
+            return Path.Combine(_environment.WebRootPath, relativePath);
         }
 
         private Task<StreamInfo> GetFileAsync(DropboxDeployInfo info, DropboxDeltaInfo delta)
