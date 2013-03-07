@@ -1,0 +1,505 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title></title>
+    <link rel="stylesheet" href="styles/jqx.base.css" type="text/css" />
+    <style>
+        .jqx-widget .jqx-grid-cell, .jqx-widget .jqx-grid-group-cell {border-color: #FFF;}
+    </style>
+    <script type="text/javascript" src="scripts/gettheme.js"></script>
+    <script type="text/javascript" src="scripts/jquery-1.8.2.js"></script>
+    <script type="text/javascript" src="scripts/jqxcore.js"></script>
+    <script type="text/javascript" src="scripts/jqxdockpanel.js"></script>
+    <script type="text/javascript" src="scripts/jqxbuttons.js"></script>
+    <script type="text/javascript" src="scripts/jqxscrollbar.js"></script>
+    <script type="text/javascript" src="scripts/jqxpanel.js"></script>
+    <script type="text/javascript" src="scripts/jqxtree.js"></script>
+    <script type="text/javascript" src="scripts/jqxexpander.js"></script>
+    <script type="text/javascript" src="scripts/jqxmenu.js"></script>
+    <script type="text/javascript" src="scripts/jqxgrid.js"></script>
+    <script type="text/javascript" src="scripts/jqxgrid.selection.js"></script> 
+    <script type="text/javascript" src="scripts/jqxgrid.columnsresize.js"></script> 
+    <script type="text/javascript" src="scripts/jqxdata.js"></script> 
+    <script type="text/javascript" src="scripts/jqxsplitter.js"></script>
+
+    <script type="text/javascript">
+        $(document).ready(function() {
+            var $tree = $("#jqxTree"),
+                $dockPanel = $('#jqxDockPanel'),
+                $grid = $('#jqxgrid'),
+                $menu = $('#jqxMenu'),
+                $loading = $('#jqxLoading'),
+                theme = getDemoTheme(),
+                scrolloffset = 20,
+                vfs = "/vfs/",
+                loading = "Loading...",
+                inode_directory = "inode/directory",
+                root = [{ Name: "SiteRoot", Href: vfs, Mime: inode_directory }],
+                loadingImg = "images/ajax_load.gif",
+                folderImg = "images/folder.png",
+                fileImg = "images/file.gif";
+
+            // jQuery creates it's own event object, and it doesn't have a      
+            // dataTransfer property yet. This adds dataTransfer to the event object.      
+            // Thanks to l4rk for figuring this out!            
+            $.event.props.push("dataTransfer");
+
+            var suppressEvent = function (e) {
+                e.preventDefault();
+                return false;
+            };
+            
+            var onFileDrop = function (e) {
+                var reader = new FileReader();
+                var files = e.dataTransfer.files;
+                var files_count = files.length;
+                var fileIndex = 0;
+
+                if (files_count !== 1) {
+                    alert("only support 1 file!");
+                    e.preventDefault();
+                    return false;
+                }
+
+                reader.onerror = function (e) {
+                    alert("reader.onerror: " + e.target.error.code);
+                    return false;
+                };
+
+                reader.onloadend = function (e) {
+                    var item = $tree.jqxTree("getSelectedItem");
+                    var url = item.value + files[fileIndex].name;
+
+                    $loading.show();
+                    $.ajax({
+                        url: url,
+                        type: 'PUT',
+                        data: e.target.result,
+                        contentType: files[fileIndex].type
+                    }).done(function (data) {
+                        refreshTree(item.element, item, true)
+                        .always(function () {
+                            $loading.hide();
+                        });
+                    }).fail(function (jqXHR, statusText, error) {
+                        alert(statusText + "," + error);
+                        $loading.hide();
+                    });
+                };
+
+                reader.readAsBinaryString(files[fileIndex]);
+
+                e.preventDefault();
+                return false;
+            };
+
+            $(document)
+                .on('drop', suppressEvent)
+                .on('dragenter', suppressEvent)
+                .on('dragover', suppressEvent)
+                .on('dragleave', suppressEvent);
+
+            $grid.on('drop', onFileDrop)
+                .on('dragenter', suppressEvent)
+                .on('dragover', suppressEvent)
+                .on('dragleave', suppressEvent);
+
+            $dockPanel.jqxSplitter({
+                theme: theme,
+                roundedcorners: true,
+                width: window.innerWidth - scrolloffset,
+                height: window.innerHeight - scrolloffset,
+                panels: [
+                    { size: '25%' },
+                    { }
+                ]
+            });
+
+            function mapTreeItem(item) {
+                return {
+                    value: item.Href,
+                    icon: folderImg,
+                    label: item.Name,
+                    expanded: false
+                }
+            }
+
+            function filterTreeItems(items) {
+                return $.grep(items, function (item) {
+                    return item.Mime === inode_directory;
+                });
+            }
+
+            function mapTreeItems(items) {
+                return $.map(filterTreeItems(items), function (item) {
+                    return $.extend(mapTreeItem(item), { items: [{ value: item.Href, label: loading, icon: loadingImg }] });
+                });
+            }
+
+            function normalizeItems(items) {
+               return $.map(items, function (item) {
+                   return $.extend(item, { IsDirectory: item.Mime === inode_directory });
+               }).sort(function (a, b) {
+                   if (a.IsDirectory === b.IsDirectory) {
+                       return a.Name.toLowerCase() > b.Name.toLowerCase();
+                   } else {
+                       return a.IsDirectory ? -1 : 1;
+                   }
+               });
+            }
+
+            $tree.jqxTree({ source: mapTreeItems(root), theme: theme, height: '100%', width: '100%' });
+
+            $tree.on('select', function (event) {
+                var $element = $(event.args.element);
+                var item = $tree.jqxTree('getItem', event.args.element);
+                if ($element.data("files") === undefined || $element.data("files") === null) {
+                    var loader = false;
+                    var loaderItem = null;
+                    var children = $("ul:first", $element).children('li');
+                    $.each(children, function () {
+                        var item = $tree.jqxTree('getItem', this);
+                        if (item.label == loading) {
+                            loaderItem = item;
+                            loader = true;
+                            return false;
+                        };
+                    });
+
+                    if (loader) {
+                        $loading.show();
+                        $.ajax({
+                            url: loaderItem.value,
+                            success: function (data, status, xhr) {
+                                data = normalizeItems(data);
+                                $element.data("files", data);
+                                $tree.jqxTree('addTo', $.map(filterTreeItems(data), mapTreeItem), $element[0]);
+                                $tree.jqxTree('removeItem', loaderItem.element);
+
+                                $.each($("ul:first", $element).children('li'), function () {
+                                    var item = $tree.jqxTree('getItem', this)
+                                    $tree.jqxTree('addTo', [{ value: item.value, label: loading, icon: loadingImg }], this);
+                                });
+
+                                var source =
+                                {
+                                    datatype: "json",
+                                    datafields: [
+                                        { name: 'name', type: 'string', map: 'Name' },
+                                        { name: 'datemodified', type: 'string', map: 'MTime' },
+                                        { name: 'size', type: 'int', map: 'Size' },
+                                        { name: 'type', type: 'string', map: 'Mime' },
+                                        { name: 'value', type: 'string', map: 'Href' }
+                                    ],
+                                    id: 'Href',
+                                    localdata: data
+                                };
+
+                                $grid.jqxGrid({
+                                    source: new $.jqx.dataAdapter(source)
+                                });
+
+                                $grid.jqxGrid('clearselection');
+                            }
+                        }).always(function () {
+                            $loading.hide();
+                        });
+                    }
+                } else {
+                    var source =
+                    {
+                        datatype: "json",
+                        datafields: [
+                            { name: 'name', type: 'string', map: 'Name' },
+                            { name: 'datemodified', type: 'string', map: 'MTime' },
+                            { name: 'size', type: 'int', map: 'Size' },
+                            { name: 'type', type: 'string', map: 'Mime' },
+                            { name: 'value', type: 'string', map: 'Href' }
+                        ],
+                        id: 'Href',
+                        localdata: $element.data("files")
+                    };
+
+                    $grid.jqxGrid({ 
+                        source: new $.jqx.dataAdapter(source)
+                    });
+
+                    $grid.jqxGrid('clearselection');
+                }
+            });
+
+            $tree.on('expand', function (event) {
+                var $element = $(event.args.element);
+                if ($element.data("files") === undefined || $element.data("files") === null) {
+                    var loader = false;
+                    var loaderItem = null;
+                    var children = $("ul:first", $element).children('li');
+
+                    $.each(children, function () {
+                        var item = $tree.jqxTree('getItem', this);
+                        if (item.label == loading) {
+                            loaderItem = item;
+                            loader = true;
+                            return false
+                        };
+                    });
+
+                    if (loader) {
+                        $.ajax({
+                            url: loaderItem.value,
+                            success: function (data, status, xhr) {
+                                data = normalizeItems(data);
+                                $element.data("files", data);
+                                $tree.jqxTree('addTo', $.map(filterTreeItems(data), mapTreeItem), $element[0]);
+                                $tree.jqxTree('removeItem', loaderItem.element);
+
+                                $.each($("ul:first", $element).children('li'), function () {
+                                    var item = $tree.jqxTree('getItem', this)
+                                    $tree.jqxTree('addTo', [{ value: item.value, label: loading, icon: loadingImg }], this);
+                                });
+                            }
+                        });
+                    }
+                }
+            });
+
+            var imagerenderer = function (row, datafield, value) {
+                if (value === "inode/directory") {
+                    return '<img style="display: block; margin: 5px;" src="' + folderImg + '"/>';
+                } else {
+                    return '<img style="display: block; margin: 5px;" src="' + fileImg + '"/>';
+                }
+            };
+
+            var daterenderer = function (row, datafield, value) {
+                return '<div style="overflow: hidden; text-overflow: ellipsis; padding-bottom: 2px; text-align: left; margin-right: 2px; margin-left: 4px; margin-top: 4px;">'
+                + new Date(value).toLocaleString().replace(/:\d\d /g, " ")
+                + '</div>';
+            };
+
+            var sizerenderer = function (row, datafield, value) {
+                return '<div style="overflow: hidden; text-overflow: ellipsis; padding-bottom: 2px; text-align: right; margin-right: 4px; margin-left: 4px; margin-top: 4px;">'
+                + value.toString().replace(/(\d{1,2}?)((\d{3})+)$/, "$1,$2").replace(/(\d{3})(?=\d)/g, "$1,")
+                + '</div>';
+            };
+
+            $grid.jqxGrid(
+            {
+                width: '100%',
+                height: '100%',
+                //source: dataAdapter,
+                theme: theme,
+                pageable: false,
+                filterable: false,
+                columnsresize: true,
+                columns: [
+                  { text: '', datafield: 'type', width: 25, cellsrenderer: imagerenderer },
+                  { text: 'Name', datafield: 'name', width: 200 },
+                  { text: 'Date modified', datafield: 'datemodified', width: 200, cellsrenderer: daterenderer },
+                  { text: 'Size bytes', datafield: 'size', width: 100, cellsrenderer: sizerenderer },
+                  { text: 'Type', datafield: 'type', width: 'auto' }
+                ]
+            });
+
+            var contextMenu = $menu.jqxMenu({
+                width: 200,
+                height: 'auto',
+                autoOpenPopup: false,
+                mode: 'popup',
+                theme: theme
+            });
+
+            $menu.on('itemclick', function (event) {
+                // get the clicked LI element.
+                var element = event.args;
+                var item = $menu.data('item');
+                if (element.id === "ctxOpen") {
+                    window.open($menu.data('item').value);
+                } else if (element.id === "ctxDownload") {
+                    window.location = $menu.data('item').value.replace(/\/vfs\//g, "/zip/");
+                } else if (element.id === "ctxRefresh") {
+                    $loading.show();
+                    refreshTree($menu.data('element'), item)
+                    .always(function () {
+                        $loading.hide();
+                    });
+                } else if (element.id === "ctxDelete") {
+                    if (item.type === "inode/directory") {
+                        alert("Not supported");
+                    } else {
+                        $loading.show();
+                        deleteItem($menu.data('element'), item)
+                        .done(function () {
+                            var item = $tree.jqxTree("getSelectedItem");
+                            refreshTree(item.element, item, true)
+                            .always(function () {
+                                $loading.hide();
+                            });
+                        })
+                        .fail(function() {
+                            $loading.hide();
+                        });
+                    }
+                }
+            });
+
+            var deleteItem = function (elem, item) {
+                var deferred = $.Deferred();
+                $.ajax({ 
+                    url: item.value,
+                    type: 'DELETE',
+                    beforeSend: function (jqXHR) {
+                        jqXHR.setRequestHeader("If-Match", "*"); 
+                    }
+                }).done(function () {
+                    deferred.resolve();
+                }).fail(function (jqXHR, statusText, error) {
+                    alert(statusText);
+                    deferred.reject();
+                });
+                return deferred.promise();
+            };
+
+
+            var refreshTree = function (elem, item, onlyGrid) {
+                var deferred = $.Deferred();
+                if (!onlyGrid) {
+                    $("ul:first", elem).empty();
+                    $tree.jqxTree('addTo', [{ value: item.value, label: loading, icon: loadingImg }], elem);
+                }
+                $(elem).data("files", null);
+
+                $.ajax({ 
+                    url: item.value 
+                }).done(function (data, status, xhr) {
+                    data = normalizeItems(data);
+                    $(elem).data("files", data);
+                    $("ul:first", elem).empty();
+                    $tree.jqxTree('addTo', $.map(filterTreeItems(data), mapTreeItem), elem);
+
+                    $.each($("ul:first", $(elem)).children('li'), function () {
+                        var item = $tree.jqxTree('getItem', this)
+                        $tree.jqxTree('addTo', [{ value: item.value, label: loading, icon: loadingImg }], this);
+                    });
+
+                    var source =
+                    {
+                        datatype: "json",
+                        datafields: [
+                            { name: 'name', type: 'string', map: 'Name' },
+                            { name: 'datemodified', type: 'string', map: 'MTime' },
+                            { name: 'size', type: 'int', map: 'Size' },
+                            { name: 'type', type: 'string', map: 'Mime' },
+                            { name: 'value', type: 'string', map: 'Href' }
+                        ],
+                        id: 'Href',
+                        localdata: data
+                    };
+
+                    $grid.jqxGrid({
+                        source: new $.jqx.dataAdapter(source)
+                    });
+                    $grid.jqxGrid('clearselection');
+
+                    deferred.resolve();
+                }).fail(function (jqXHR, statusText, error) {
+                    alert(statusText);
+                    deferred.reject();
+                });
+
+                return deferred.promise();
+            };
+
+            $menu.on('closed', function (event) {
+                $menu.data('item', null);
+                $menu.data('element', null);
+            });
+
+            $grid.on('contextmenu', function () {
+                return false;
+            });
+
+            $grid.on('rowclick', function (event) {
+                if (event.args.rightclick) {
+                    var item = $grid.jqxGrid('getrowdata', event.args.rowindex);
+                    $menu.data('item', item);
+                    $("#ctxRefresh", $menu).hide();
+                    if (item.type === "inode/directory") {
+                        $("#ctxDownload", $menu).show();
+                        $menu.jqxMenu({ height: 87 });
+                    } else {
+                        $("#ctxDownload", $menu).hide();
+                        $menu.jqxMenu({ height: 58 });
+                    }
+                    var scrollTop = $(window).scrollTop();
+                    var scrollLeft = $(window).scrollLeft();
+                    contextMenu.jqxMenu('open', parseInt(event.args.originalEvent.clientX) + 5 + scrollLeft, parseInt(event.args.originalEvent.clientY) + 5 + scrollTop);
+                    return false;
+                } else {
+                    $menu.data('item', null);
+                }
+            });
+
+            $tree.on('contextmenu', function () {
+                return false;
+            });
+
+            function isRightClick(event) {
+                var rightclick;
+                if (!event) var event = window.event;
+                if (event.which) rightclick = (event.which == 3);
+                else if (event.button) rightclick = (event.button == 2);
+                return rightclick;
+            }
+
+            $tree.on('mousedown', function (event) {
+                var rightClick = isRightClick(event);
+                if (rightClick) {
+                    var treeElem = $(event.target).parent()[0];
+                    $menu.data('element', treeElem);
+                    var item = $tree.jqxTree('getItem', treeElem);
+                    $menu.data('item', item);
+                    if (item) {
+                        var scrollTop = $(window).scrollTop();
+                        var scrollLeft = $(window).scrollLeft();
+
+                        $("#ctxDownload", $menu).show();
+                        $("#ctxRefresh", $menu).show();
+                        $menu.jqxMenu({ height: 116 });
+                        contextMenu.jqxMenu('open', parseInt(event.clientX) + 5 + scrollLeft, parseInt(event.clientY) + 5 + scrollTop);
+                        return false;
+                    }
+                }
+            });
+
+            $(window).resize(function () {
+                $dockPanel.width(window.innerWidth - scrolloffset);
+                $dockPanel.height(window.innerHeight - scrolloffset);
+                $dockPanel.jqxDockPanel('render');
+            });
+        });
+    </script>
+</head>
+<body>
+    <div id='jqxWidget' style="font-size: 13px; font-family: Verdana;">
+        <div id='jqxDockPanel'>
+            <div id='folderPanel'>
+                <div class="header" style="white-space: nowrap; padding: 3px; padding-left: 8px; background-color: #e8e8e8; height: 20px;">Folders</div>
+                <div id='jqxTree'></div>
+            </div>
+            <div id='filePanel'>   
+                <div id="jqxgrid"></div>
+                <img id="jqxLoading" src='images/loader_2.gif' style="position: absolute; top: 40%; left: 50%; border-style: none; display: none" />             
+            </div>
+        </div>
+       <div id='jqxMenu'>
+        <ul>
+            <li id="ctxOpen">Open</li>
+            <li id="ctxDownload">Download</li>
+            <li id="ctxDelete">Delete</li>
+            <li id="ctxRefresh">Refresh</li>
+        </ul>
+       </div>
+    </div>
+</body>
+</html>

@@ -126,6 +126,10 @@
             <td><strong>Up Time</strong></td>
             <td><%= upTime %></td>
         </tr>
+        <tr>
+            <td><strong>File Explorer</strong></td>
+            <td><a href="Explorer/index.html">Open</a></td>
+        </tr>
     </table>
 </body>
 </html>
