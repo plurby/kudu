@@ -156,7 +156,9 @@ namespace Kudu.TestHarness
 
             try
             {
+                long before = System.GC.GetTotalMemory(false);
                 RunNoCatch(testName, action);
+                Trace.WriteLine(String.Format("##teamcity[buildStatisticValue key='MemoryUsage' value='{0}']", System.GC.GetTotalMemory(false) - before));
             }
             catch
             {
