@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 
 namespace Kudu.Contracts.Infrastructure
 {
@@ -27,6 +28,31 @@ namespace Kudu.Contracts.Infrastructure
             try
             {
                 operation();
+            }
+            finally
+            {
+                if (lockTaken)
+                {
+                    lockObj.Release();
+                }
+            }
+        }
+
+        public static async Task LockOperation(this IOperationLock lockObj,
+                                               Func<Task> operation,
+                                               Action onBusy)
+        {
+            bool lockTaken = lockObj.Lock();
+
+            if (!lockTaken)
+            {
+                onBusy();
+                return;
+            }
+
+            try
+            {
+                await operation();
             }
             finally
             {

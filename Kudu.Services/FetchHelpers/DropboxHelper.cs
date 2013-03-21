@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web;
 using Kudu.Common;
 using Kudu.Contracts.Dropbox;
 using Kudu.Contracts.Settings;
@@ -39,6 +40,7 @@ namespace Kudu.Services
         private ILogger _logger;
 
         // stats
+        private int _totals;
         private int _successCount;
         private int _fileCount;
         private int _failedCount;
@@ -56,7 +58,7 @@ namespace Kudu.Services
             _timeout = settings.GetCommandIdleTimeout();
         }
 
-        internal ChangeSet Sync(DropboxHandler.DropboxInfo deploymentInfo, string branch, ILogger logger, IRepository repository)
+        internal async Task<ChangeSet> Sync(DropboxHandler.DropboxInfo deploymentInfo, string branch, ILogger logger, IRepository repository)
         {
             DropboxDeployInfo info = deploymentInfo.DeployInfo;
 
@@ -85,7 +87,7 @@ namespace Kudu.Services
                 using (_tracer.Step("Synch with Dropbox"))
                 {
                     // Sync dropbox => repository directory
-                    ApplyChanges(deploymentInfo);
+                    await ApplyChanges(deploymentInfo);
                 }
 
                 message = String.Format(CultureInfo.CurrentCulture,
@@ -123,15 +125,34 @@ namespace Kudu.Services
             return changeSet;
         }
 
-        private void ApplyChanges(DropboxHandler.DropboxInfo deploymentInfo)
+        private void UpdateStatusFile(object state)
+        {
+            string changeset = (string)state;
+            IDeploymentStatusFile statusFile =_status.Open(changeset);
+            statusFile.UpdateProgress(String.Format(CultureInfo.CurrentUICulture,
+                                        _failedCount == 0 ? Resources.Dropbox_SynchronizingProgress : Resources.Dropbox_SynchronizingProgressWithFailure,
+                                        ((_successCount + _failedCount) * 100) / _totals,
+                                        _totals,
+                                        _failedCount));
+        }
+
+        private async Task ApplyChanges(DropboxHandler.DropboxInfo deploymentInfo)
         {
             DropboxDeployInfo info = deploymentInfo.DeployInfo;
-            Semaphore sem = new Semaphore(MaxConcurrentRequests, MaxConcurrentRequests);
+            _totals = info.Deltas.Count;
+
+            using (var timer = new Timer(UpdateStatusFile, state: deploymentInfo.TargetChangeset.Id, dueTime: TimeSpan.FromSeconds(5), period: TimeSpan.FromSeconds(5)))
+            {
+                await ApplyChangesCore(info);
+            }
+        }
+
+        private Task ApplyChangesCore(DropboxDeployInfo info)
+        {
             List<Task> tasks = new List<Task>();
-            string parent = info.Path.TrimEnd('/') + '/';
-            DateTime updateMessageTime = DateTime.Now;
-            int totals = info.Deltas.Count();
+            var sem = new SemaphoreSlim(MaxConcurrentRequests, MaxConcurrentRequests);
             var rateLimiter = new RateLimiter(MaxFilesPerSecs * 10, TimeSpan.FromSeconds(10));
+            string parent = info.Path.TrimEnd('/') + '/';
 
             foreach (DropboxDeltaInfo delta in info.Deltas)
             {
@@ -162,7 +183,16 @@ namespace Kudu.Services
                 }
                 else
                 {
-                    DateTime modified = DateTime.Parse(delta.Modified).ToUniversalTime();
+                    DateTime modified;
+                    if (DateTime.TryParse(delta.Modified, out modified))
+                    {
+                        modified = modified.ToUniversalTime();
+                    }
+                    else
+                    {
+                        modified = DateTime.UtcNow;
+                    }
+
                     if (!IsFileChanged(parent, path, modified))
                     {
                         LogInfo("file unchanged {0}", path);
@@ -170,66 +200,33 @@ namespace Kudu.Services
                         continue;
                     }
 
-                    // throttle concurrent get file dropbox
-                    sem.WaitOne();
-                    Task task;
                     try
                     {
-                        // Using ContinueWith instead of Then to avoid SyncContext deadlock in 4.5
-                        task = GetFileAsync(info, delta).ContinueWith(t =>
+                        Task task = Task.Run(async () =>
                         {
-                            rateLimiter.Throtte();
-
-                            sem.Release();
-                            if (!t.IsFaulted && !t.IsCanceled)
+                            try
                             {
-                                using (StreamInfo streamInfo = t.Result)
-                                {
-                                    SafeWriteFile(parent, path, streamInfo.Stream, modified);
-                                }
-
-                                Interlocked.Increment(ref _successCount);
-                                Interlocked.Increment(ref _fileCount);
+                                sem.Wait();
+                                rateLimiter.Throtte();
+                                await ProcessFileAsync(info, delta, parent, path, modified);
                             }
-                            else
+                            finally
                             {
-                                Interlocked.Increment(ref _failedCount);
+                                sem.Release();
                             }
-
-                            if (DateTime.Now.Subtract(updateMessageTime) > TimeSpan.FromSeconds(5))
-                            {
-                                lock (_status)
-                                {
-                                    _status.Open(deploymentInfo.TargetChangeset.Id).UpdateProgress(
-                                        String.Format(CultureInfo.CurrentUICulture, 
-                                            _failedCount == 0 ? Resources.Dropbox_SynchronizingProgress : Resources.Dropbox_SynchronizingProgressWithFailure,
-                                            ((_successCount + _failedCount) * 100) / totals,
-                                            totals,
-                                            _failedCount));
-                                }
-
-                                updateMessageTime = DateTime.Now;
-                            }
-
-                            return t;
-                        }).FastUnwrap();
+                        });
+                        
+                        tasks.Add(task);
                     }
                     catch (Exception ex)
                     {
-                        sem.Release();
                         LogError("{0}", ex);
-                        Task.WaitAll(tasks.ToArray(), _timeout);
                         throw;
                     }
-
-                    tasks.Add(task);
                 }
             }
 
-            if (!Task.WaitAll(tasks.ToArray(), _timeout))
-            {
-                throw new TimeoutException(RS.Format(Resources.Error_SyncDropboxTimeout, (int)_timeout.TotalSeconds));
-            }
+            return Task.WhenAll(tasks);
         }
 
         private bool IsFileChanged(string parent, string path, DateTime modified)
@@ -269,7 +266,7 @@ namespace Kudu.Services
             }
         }
 
-        private void SafeWriteFile(string parent, string path, Stream stream, DateTime modified)
+        private async Task SafeWriteFile(string parent, string path, DateTime lastModifiedUtc, Stream stream)
         {
             var fullPath = GetRepositoryPath(parent, path);
             if (Directory.Exists(fullPath))
@@ -280,11 +277,11 @@ namespace Kudu.Services
 
             using (FileStream fs = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
             {
-                stream.CopyTo(fs);
+                await stream.CopyToAsync(fs);
                 LogInfo("write {0,6} bytes to {1}", fs.Length, path);
             }
 
-            File.SetLastWriteTimeUtc(fullPath, modified);
+            File.SetLastWriteTimeUtc(fullPath, lastModifiedUtc);
         }
 
         private string GetRepositoryPath(string parent, string path)
@@ -293,7 +290,7 @@ namespace Kudu.Services
             return Path.Combine(_environment.RepositoryPath, relativePath);
         }
 
-        private Task<StreamInfo> GetFileAsync(DropboxDeployInfo info, DropboxDeltaInfo delta, int retries = MaxRetries)
+        private async Task ProcessFileAsync(DropboxDeployInfo info, DropboxDeltaInfo delta, string path, string parent, DateTime lastModifiedUtc)
         {
             var parameters = new Dictionary<string, string>
             {
@@ -316,82 +313,54 @@ namespace Kudu.Services
                 sb.AppendFormat("{0}=\"{1}\"", key, parameters[key]);
             }
 
-            var client = new HttpClient();
-            client.BaseAddress = new Uri(DropboxApiContentUri);
-            client.Timeout = _timeout;
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("OAuth", sb.ToString());
+            int retries = MaxRetries;
 
-            // Using ContinueWith instead of Then to avoid SyncContext deadlock in 4.5
-            var tcs = new TaskCompletionSource<Task<StreamInfo>>();
-            client.GetAsync(SandboxFilePath + DropboxPathEncode(delta.Path.ToLower(CultureInfo.CurrentCulture))).ContinueWith(t =>
+            while (retries >= 0)
             {
-                if (t.IsFaulted)
+                retries--;
+
+                using (var client = new HttpClient { BaseAddress = new Uri(DropboxApiContentUri), Timeout = _timeout })
                 {
-                    using (client)
-                    {
-                        if (retries <= 0)
-                        {
-                            LogError("Get(" + retries + ") '" + SandboxFilePath + delta.Path + "' failed with " + t.Exception);
-                            tcs.TrySetException(t.Exception.InnerExceptions);
-                        }
-                        else
-                        {
-                            LogError("Retry(" + retries + ") '" + SandboxFilePath + delta.Path + "' failed with " + t.Exception);
-                            tcs.TrySetResult(RetryGetFileAsync(info, delta, retries));
-                        }
-                    }
-                }
-                else if (t.IsCanceled)
-                {
-                    using (client)
-                    {
-                        tcs.TrySetCanceled();
-                    }
-                }
-                else
-                {
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("OAuth", sb.ToString());
                     try
                     {
-                        HttpResponseMessage response = t.Result;
-                        if ((int)response.StatusCode < 500 || retries <= 0)
+                        path = SandboxFilePath + DropboxPathEncode(delta.Path.ToLowerInvariant());
+                        using (HttpResponseMessage response = await client.GetAsync(path))
                         {
-                            response.EnsureSuccessStatusCode();
-                            tcs.TrySetResult(GetStreamInfo(client, response, delta.Path));
-                            if (retries < MaxRetries)
+                            using (Stream stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync())
                             {
-                                // Success due to retried
-                                Interlocked.Increment(ref _retriedCount);
+                                await SafeWriteFile(parent, path, lastModifiedUtc, stream);
                             }
                         }
-                        else
+                        if (retries < MaxRetries - 1)
                         {
-                            using (client)
-                            {
-                                using (response)
-                                {
-                                    LogError("Retry(" + retries + ") '" + SandboxFilePath + delta.Path + "' failed with " + (int)response.StatusCode);
-                                    tcs.TrySetResult(RetryGetFileAsync(info, delta, retries));
-                                }
-                            }
+                            Interlocked.Increment(ref _retriedCount);
                         }
+                        Interlocked.Increment(ref _successCount);
+
+                        break;
                     }
                     catch (Exception ex)
                     {
-                        LogError("Get(" + retries + ") '" + SandboxFilePath + delta.Path + "' failed with " + ex);
-                        tcs.TrySetException(ex);
+                        if (retries <= 0)
+                        {
+                            Interlocked.Increment(ref _failedCount);
+                            LogError("Get({0}) '{1}'failed with {2}", MaxRetries - retries - 1, SandboxFilePath + delta.Path, ex.Message);
+                            break;
+                        }
+                        else
+                        {
+                            // First retry is 1s, second retry is 20s assuming rate-limit
+                            Thread.Sleep(retries == 1 ? TimeSpan.FromSeconds(20) : TimeSpan.FromSeconds(1));
+                            continue;
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Increment(ref _fileCount);
                     }
                 }
-            });
-
-            return tcs.Task.FastUnwrap();
-        }
-
-        private Task<StreamInfo> RetryGetFileAsync(DropboxDeployInfo info, DropboxDeltaInfo delta, int retries)
-        {
-            // First retry is 1s, second retry is 20s assuming rate-limit
-            Thread.Sleep(retries == 1 ? 20000 : 1000);
-
-            return GetFileAsync(info, delta, retries - 1);
+            }
         }
 
         // Ported from https://github.com/SpringSource/spring-net-social-dropbox/blob/master/src/Spring.Social.Dropbox/Social/Dropbox/Api/Impl/DropboxTemplate.cs#L1713
@@ -432,67 +401,6 @@ namespace Kudu.Services
             _tracer.TraceError(message);
         }
 
-        private Task<StreamInfo> GetStreamInfo(HttpClient client, HttpResponseMessage response, string path)
-        {
-            var tcs = new TaskCompletionSource<StreamInfo>();
-
-            response.Content.ReadAsStreamAsync().ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    LogError("Get '" + SandboxFilePath + path + "' failed with " + t.Exception);
-                    tcs.TrySetException(t.Exception.InnerExceptions);
-                }
-                else if (t.IsCanceled)
-                {
-                    tcs.TrySetCanceled();
-                }
-                else
-                {
-                    try
-                    {
-                        tcs.TrySetResult(new StreamInfo(client, response, t.Result));
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError("Get '" + SandboxFilePath + path + "' failed with " + ex);
-                        tcs.TrySetException(ex);
-                    }
-                }
-            });
-
-            return tcs.Task;
-        }
-
-        class StreamInfo : IDisposable
-        {
-            private readonly HttpClient _client;
-            private readonly HttpResponseMessage _response;
-            private readonly Stream _stream;
-
-            public StreamInfo(HttpClient client, HttpResponseMessage response, Stream stream)
-            {
-                _client = client;
-                _response = response;
-                _stream = stream;
-            }
-
-            public Stream Stream
-            {
-                get { return this._stream; }
-            }
-
-            public void Dispose()
-            {
-                // optimize codes for success
-                // we don't do nested try/finally to handle failure dispose
-                // we let GC take care of that
-                _stream.Dispose();
-                _response.Dispose();
-                _client.Dispose();
-            }
-        }
-
         public class RateLimiter
         {
             private readonly object _thisLock = new object();
@@ -500,7 +408,7 @@ namespace Kudu.Services
             private readonly TimeSpan _interval;
 
             private int _current = 0;
-            private DateTime _last = DateTime.Now;
+            private DateTime _last = DateTime.UtcNow;
 
             public RateLimiter(int limit, TimeSpan interval)
             {
@@ -515,12 +423,12 @@ namespace Kudu.Services
                     _current++;
                     if (_current > _limit)
                     {
-                        DateTime now = DateTime.Now;
+                        DateTime now = DateTime.UtcNow;
                         TimeSpan ts = now - _last;
                         if (ts < _interval)
                         {
                             Thread.Sleep(_interval - ts);
-                            _last = DateTime.Now;
+                            _last = DateTime.UtcNow;
                         }
                         else
                         {
